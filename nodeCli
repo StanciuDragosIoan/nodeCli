@@ -1,0 +1,208 @@
+#!/usr/bin/env node
+const fs = require("fs");
+const readline = require("node:readline");
+const {
+  scryptSync,
+  randomFillSync,
+  createCipheriv,
+  createDecipheriv,
+} = require("node:crypto");
+
+const { pipeline } = require("node:stream");
+const args = process.argv;
+
+const commands = ["read", "write", "copy", "encrypt", "decrypt"];
+
+const logError = (message) => {
+  console.error(`Error: ${message}`);
+};
+
+const getInitialPrompt = () => {
+  const initialPrompt = `
+      nodeCli is a simple cli program to demonstrate how to manipulate files using NodeJS streams.
+  
+      usage:
+          nodeCli <command> <path_to_file>
+  
+          <command> argument can be:
+  
+          read: Print a file's contents to the terminal
+          write: Write a message from the terminal to a file
+          encrypt: Encrypt a file
+          decrypt: Decrypt a file
+          copy: Create a copy of a file in the current directory
+  
+          <path_to_file> is the path to the file you want to work with.
+      `;
+
+  console.log(initialPrompt);
+};
+
+const readFile = (path) => {
+  const readableStream = fs.createReadStream(path, "utf-8"); //remember to omit encoding argument first and explain how buffer contents look like
+
+  readableStream.on("error", function (error) {
+    logError(`Reading file failed: ${error.message}`);
+  });
+
+  readableStream.on("data", (chunk) => {
+    console.log(chunk);
+  });
+};
+
+const writeToFile = (path) => {
+  const writableStream = fs.createWriteStream(path);
+
+  writableStream.on("error", (error) => {
+    logError(
+      `An error occured while writing to the file. Error: ${error.message}`
+    );
+  });
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    prompt: "Enter a sentence: ",
+  });
+
+  rl.prompt();
+
+  rl.on("line", (line) => {
+    switch (line.trim()) {
+      case "exit":
+        rl.close();
+        break;
+      default:
+        writableStream.write(`${line}\n`);
+        rl.prompt();
+        break;
+    }
+  }).on("close", () => {
+    writableStream.end();
+    writableStream.on("finish", () => {
+      console.log(`All your sentences have been written to ${path}`);
+    });
+  });
+};
+
+const getFileNameWithoutExtension = (path) => {
+  const splitPath = path.split("/");
+  const fileNameWithExtension = splitPath[splitPath.length - 1];
+  return fileNameWithExtension.split(".")[0];
+};
+
+const copyFile = (path) => {
+  const fileNameWithoutExtension = getFileNameWithoutExtension(path);
+  const readStream = fs.createReadStream(path);
+
+  const outputStream = fs.createWriteStream(
+    `${fileNameWithoutExtension}-copy.txt`
+  );
+
+  readStream.pipe(outputStream);
+
+  outputStream.on("finish", () => {
+    console.log(
+      `You have successfully created a ${fileNameWithoutExtension} copy. The new file name is ${fileNameWithoutExtension}-copy.txt.`
+    );
+  });
+};
+
+const encryptFile = async (path) => {
+  const fileNameWithoutExtension = getFileNameWithoutExtension(path);
+
+  const algorithm = "aes-192-cbc";
+  const password = "Password used to generate key";
+
+  try {
+    // Generate the key using scrypt
+    const key = await scryptSync(password, "salt", 24);
+
+    // Generate a random initialization vector (IV)
+    const iv = await randomFillSync(Buffer.alloc(16));
+    const cipher = createCipheriv(algorithm, key, iv);
+    const input = fs.createReadStream(path);
+    const output = fs.createWriteStream(`${fileNameWithoutExtension}.enc`);
+
+    // Write the IV to the output file
+    output.write(iv);
+
+    // Encrypt the file
+    pipeline(input, cipher, output, (err) => {
+      if (err) throw err;
+      console.log("Encryption completed.");
+    });
+  } catch (err) {
+    logError(`Encryption error: ${err}`);
+  }
+};
+
+const decryptFile = async (path) => {
+  const fileNameWithoutExtension = getFileNameWithoutExtension(path);
+
+  const algorithm = "aes-192-cbc";
+  const password = "Password used to generate key";
+
+  try {
+    // Generate the key using scrypt
+    const key = scryptSync(password, "salt", 24);
+
+    const input = fs.createReadStream(path);
+
+    // Read the IV from the beginning of the encrypted file
+    const ivBuffer = await new Promise((resolve) => {
+      input.once("readable", () => {
+        const chunk = input.read(16);
+        resolve(chunk);
+      });
+    });
+
+    const decipher = createDecipheriv(algorithm, key, ivBuffer);
+
+    const output = fs.createWriteStream(
+      `${fileNameWithoutExtension}-decrypted.txt`
+    );
+
+    // Use pipeline for reading the IV and decrypting the file
+    pipeline(input, decipher, output, (err) => {
+      if (err) throw err;
+      console.log("Decryption completed.");
+    });
+  } catch (err) {
+    logError(`Decryption error: ${err}`);
+  }
+};
+
+let command = args[2];
+const fileArg = args[3];
+
+if (args.length < 3 || args.length > 4 || !fileArg) {
+  logError("Invalid arguments provided");
+  getInitialPrompt();
+  return;
+}
+
+switch (commands.indexOf(command)) {
+  case 0:
+    readFile(fileArg);
+    break;
+  case 1:
+    writeToFile(fileArg);
+    break;
+  case 2:
+    copyFile(fileArg);
+    break;
+  case 3:
+    encryptFile(fileArg);
+    break;
+  case 4:
+    decryptFile(fileArg);
+    break;
+
+  default:
+    console.log(
+      `You entered a wrong command: ${command}. See help text below for supported functions`
+    );
+    getInitialPrompt();
+    return;
+}
